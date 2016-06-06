@@ -4,6 +4,7 @@ from collections import Iterable, Iterator, defaultdict
 from functools import wraps, partial
 import itertools
 import math
+import pickle
 import os
 import uuid
 from warnings import warn
@@ -551,17 +552,33 @@ class Bag(Base):
             return self.reduction(reduce(binop), reduce(combine),
                                   split_every=split_every)
 
-    def frequencies(self, split_every=None):
+    def frequencies(self, split_every=None, npartitions=1, keep_dict=False):
         """ Count number of occurrences of each distinct element
 
         >>> b = from_sequence(['Alice', 'Bob', 'Alice'])
         >>> dict(b.frequencies())  # doctest: +SKIP
         {'Alice': 2, 'Bob', 1}
         """
-        return self.reduction(frequencies, merge_frequencies,
-                              out_type=Bag, split_every=split_every,
-                              name='frequencies').map_partitions(dictitems)
 
+        freqs = self.reduction(frequencies, merge_frequencies,
+                              out_type=Bag, split_every=split_every,
+                              name='frequencies')
+
+        if npartitions > 1:
+
+            p = ('partd-%s-%d'%(freqs.name, npartitions))
+            dsk1 = {p: (partition_dict, npartitions, (freqs.name, 0))}
+
+            name = ('collect-%s-%d'%(freqs.name, npartitions))
+            dsk2 = dict(((name, i),
+                         (collect_dict, p, i))
+                    for i in range(npartitions))
+
+            freqs = Bag(merge(self.dask, freqs.dask, dsk1, dsk2), name,
+                              npartitions)
+
+        return freqs.map_partitions(dictitems)
+         
     def topk(self, k, key=None, split_every=None):
         """ K largest elements in collection
 
@@ -1050,6 +1067,22 @@ def accumulate_part(binop, seq, initial, is_first=False):
 
 normalize_token.register(Item, lambda a: a.key)
 normalize_token.register(Bag, lambda a: a.name)
+
+
+def partition_dict(npartitions, d):
+    import partd   
+    try:
+        p = partd.Python(partd.Snappy, partd.File())
+    except AttributeError:
+        p = partd.Python(partd.File())
+    partition_size = int(math.ceil(len(d) / npartitions))
+    for i,part in enumerate(partition_all(partition_size, d.keys())):
+        p.append({i:[pickle.dumps({k:d[k] for k in part}, protocol=pickle.HIGHEST_PROTOCOL)]})
+    return p    
+
+
+def collect_dict(p, part):
+    return merge(pickle.loads(s) for s in p.get(part, lock=False))
 
 
 def partition(grouper, sequence, npartitions, p, nelements=2**20):
