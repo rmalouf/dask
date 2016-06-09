@@ -711,10 +711,6 @@ def test_loc_with_series():
     assert sorted(d.loc[d.a % 2].dask) != sorted(d.loc[d.a % 3].dask)
 
 
-def test_iloc_raises():
-    assert raises(NotImplementedError, lambda: d.iloc[:5])
-
-
 def test_getitem():
     df = pd.DataFrame({'A': [1, 2, 3, 4, 5, 6, 7, 8, 9],
                        'B': [9, 8, 7, 6, 5, 4, 3, 2, 1],
@@ -886,7 +882,7 @@ def test_concat4_interleave_partitions():
     ddf2 = dd.from_pandas(pdf2, 3)
     ddf3 = dd.from_pandas(pdf3, 2)
 
-    msg = ('All inputs have known divisions which cannnot be '
+    msg = ('All inputs have known divisions which cannot be '
            'concatenated in order. Specify '
            'interleave_partitions=True to ignore order')
 
@@ -1475,7 +1471,7 @@ def test_apply():
     assert eq(ddf.apply(lambda xy: xy[0] + xy[1], axis='columns', columns=None),
               df.apply(lambda xy: xy[0] + xy[1], axis='columns'))
 
-    # inferrence
+    # inference
     assert eq(ddf.apply(lambda xy: xy[0] + xy[1], axis=1),
               df.apply(lambda xy: xy[0] + xy[1], axis=1))
     assert eq(ddf.apply(lambda xy: xy, axis=1),

@@ -6,7 +6,6 @@ import os
 import dask
 import pytest
 from threading import Lock
-import tempfile
 import shutil
 from time import sleep
 import threading
@@ -15,7 +14,7 @@ import dask.array as da
 import dask.dataframe as dd
 from dask.dataframe.io import (from_array, from_bcolz, from_dask_array)
 
-from dask.utils import filetext, filetexts, tmpfile
+from dask.utils import filetext, filetexts, tmpfile, tmpdir
 from dask.async import get_sync
 
 from dask.dataframe.utils import eq
@@ -383,8 +382,7 @@ def test_consistent_dtypes_2():
 
 @pytest.mark.slow
 def test_compression_multiple_files():
-    tdir = tempfile.mkdtemp()
-    try:
+    with tmpdir() as tdir:
         f = gzip.open(os.path.join(tdir, 'a.csv.gz'), 'wb')
         f.write(text.encode())
         f.close()
@@ -396,8 +394,6 @@ def test_compression_multiple_files():
         df = dd.read_csv(os.path.join(tdir, '*.csv.gz'), compression='gzip')
 
         assert len(df.compute()) == (len(text.split('\n')) - 1) * 2
-    finally:
-        shutil.rmtree(tdir)
 
 
 def test_empty_csv_file():
@@ -698,6 +694,55 @@ def test_to_hdf():
     a = dd.from_pandas(df, 1)
     with tmpfile('h5') as fn:
         a.to_hdf(fn, '/data')
+        out = pd.read_hdf(fn, '/data')
+        tm.assert_frame_equal(df, out[:])
+
+    # saving to multiple datasets
+    a = dd.from_pandas(df, 2)
+    with tmpfile('h5') as fn:
+        a.to_hdf(fn, '/data*')
+        out = dd.read_hdf(fn, '/data*')
+        tm.assert_frame_equal(df, out.compute())
+
+    # saving to multiple files
+    a = dd.from_pandas(df, 2)
+    with tmpdir() as dn:
+        fn = os.path.join(dn, 'data_*.h5')
+        a.to_hdf(fn, '/data')
+        out = dd.read_hdf(fn, '/data')
+        tm.assert_frame_equal(df, out.compute())
+
+    # saving to multiple datasets with custom name_function
+    a = dd.from_pandas(df, 2)
+    with tmpfile('h5') as fn:
+        a.to_hdf(fn, '/data_*', name_function=lambda i: 'a' * (i +  1))
+        out = dd.read_hdf(fn, '/data_*')
+        tm.assert_frame_equal(df, out.compute())
+
+        out = pd.read_hdf(fn, '/data_a')
+        tm.assert_frame_equal(out, df.iloc[:2])
+        out = pd.read_hdf(fn, '/data_aa')
+        tm.assert_frame_equal(out, df.iloc[2:])
+
+    # saving to multiple files with custom name_function
+    a = dd.from_pandas(df, 2)
+    with tmpdir() as dn:
+        fn = os.path.join(dn, 'data_*.h5')
+        a.to_hdf(fn, '/data', name_function=lambda i: 'a' * (i +  1))
+        out = dd.read_hdf(fn, '/data')
+        tm.assert_frame_equal(df, out.compute())
+
+        out = pd.read_hdf(os.path.join(dn, 'data_a.h5'), '/data')
+        tm.assert_frame_equal(out, df.iloc[:2])
+        out = pd.read_hdf(os.path.join(dn, 'data_aa.h5'), '/data')
+        tm.assert_frame_equal(out, df.iloc[2:])
+
+    # saving to different datasets in multiple files with custom name_function
+    a = dd.from_pandas(df, 2)
+    with tmpdir() as dn:
+        with pytest.raises(ValueError):
+            fn = os.path.join(dn, 'data_*.h5')
+            a.to_hdf(fn, '/data_*', name_function=lambda i: 'a' * (i +  1))
 
 
 def test_read_hdf():
@@ -855,8 +900,7 @@ def test_hdf_globbing():
     df = pd.DataFrame({'x': ['a', 'b', 'c', 'd'],
                        'y': [1, 2, 3, 4]}, index=[1., 2., 3., 4.])
 
-    tdir = tempfile.mkdtemp()
-    try:
+    with tmpdir() as tdir:
         df.to_hdf(os.path.join(tdir, 'one.h5'), '/foo/data', format='table')
         df.to_hdf(os.path.join(tdir, 'two.h5'), '/bar/data', format='table')
         df.to_hdf(os.path.join(tdir, 'two.h5'), '/foo/data', format='table')
@@ -884,8 +928,6 @@ def test_hdf_globbing():
             res = dd.read_hdf(os.path.join(tdir, '*.h5'), '/*/data', chunksize=2)
             assert res.npartitions == 2 + 2 + 2
             tm.assert_frame_equal(res.compute(), pd.concat([df] * 3))
-    finally:
-        shutil.rmtree(tdir)
 
 
 def test_index_col():

@@ -97,15 +97,17 @@ def read_csv_from_bytes(block_lists, header, head, kwargs, collection=True,
     """
     dtypes = head.dtypes.to_dict()
     columns = list(head.columns)
-    func = partial(delayed(bytes_read_csv), enforce=enforce)
+    func = delayed(bytes_read_csv)
     dfs = []
     for blocks in block_lists:
         if not blocks:
             continue
-        df = func(blocks[0], header, kwargs, dtypes, columns, write_header=False)
+        df = func(blocks[0], header, kwargs, dtypes, columns,
+                  write_header=False, enforce=enforce)
         dfs.append(df)
         for b in blocks[1:]:
-            dfs.append(func(b, header, kwargs, dtypes, columns))
+            dfs.append(func(b, header, kwargs, dtypes, columns,
+                            enforce=enforce))
 
     if collection:
         return from_delayed(dfs, head)
@@ -115,7 +117,7 @@ def read_csv_from_bytes(block_lists, header, head, kwargs, collection=True,
 
 def read_csv(filename, blocksize=2**25, chunkbytes=None,
         collection=True, lineterminator='\n', compression=None,
-        sample=10000, enforce=False, storage_options=None, **kwargs):
+        sample=256000, enforce=False, storage_options=None, **kwargs):
     """ Read CSV files into a Dask.DataFrame
 
     This parallelizes the ``pandas.read_csv`` file in the following ways:

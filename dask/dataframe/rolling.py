@@ -9,7 +9,7 @@ from ..base import tokenize
 
 
 def rolling_chunk(func, part1, part2, window, *args):
-    if part1.shape[0] < window:
+    if part1.shape[0] < window-1:
         raise NotImplementedError("Window larger than partition size")
     if window > 1:
         extra = window - 1
@@ -57,3 +57,113 @@ rolling_kurt = wrap_rolling(pd.rolling_kurt)
 rolling_quantile = wrap_rolling(pd.rolling_quantile)
 rolling_apply = wrap_rolling(pd.rolling_apply)
 rolling_window = wrap_rolling(pd.rolling_window)
+
+def call_pandas_rolling_method_single(this_partition, rolling_kwargs,
+        method_name, method_args, method_kwargs):
+    # used for the start of the df/series (or for rolling through columns)
+    method = getattr(this_partition.rolling(**rolling_kwargs), method_name)
+    return method(*method_args, **method_kwargs)
+
+def call_pandas_rolling_method_with_neighbor(prev_partition, this_partition,
+        rolling_kwargs, method_name, method_args, method_kwargs):
+    # used for everything except for the start
+
+    window = rolling_kwargs['window']
+    if prev_partition.shape[0] < window-1:
+        raise NotImplementedError("Window larger than partition size")
+
+    if window > 1:
+        extra = window - 1
+        combined = pd.concat([prev_partition.iloc[-extra:], this_partition])
+
+        method = getattr(combined.rolling(window), method_name)
+        applied = method(*method_args, **method_kwargs)
+        return applied.iloc[extra:]
+    else:
+        method = getattr(this_partition.rolling(window), method_name)
+        return method(*method_args, **method_kwargs)
+
+class Rolling(object):
+    # What you get when you do ddf.rolling(...) or similar
+    """Provides rolling window calculations.
+
+    """
+
+    def __init__(self, obj, kwargs):
+        self.obj = obj # dataframe or series
+        self.rolling_kwargs = kwargs
+
+        # Allow pandas to raise if appropriate
+        obj._pd.rolling(**kwargs)
+
+    def _call_method(self, method_name, *args, **kwargs):
+        args = list(args) # make sure dask does not mistake this for a task
+
+        old_name = self.obj._name
+        new_name = 'rolling-' + tokenize(
+            self.obj, self.rolling_kwargs, method_name, args, kwargs)
+
+        # For all but the first chunk, we'll pass the whole previous chunk
+        # in so we can use it to pre-feed our window
+        dsk = {(new_name, 0): (
+            call_pandas_rolling_method_single, (old_name, 0),
+            self.rolling_kwargs, method_name, args, kwargs)}
+        if self.rolling_kwargs['axis'] in [0, 'rows']:
+            # roll in the partition direction (will need to access neighbor)
+            for i in range(1, self.obj.npartitions + 1):
+                dsk[new_name, i] = (
+                    call_pandas_rolling_method_with_neighbor,
+                    (old_name, i-1), (old_name, i),
+                    self.rolling_kwargs, method_name, args, kwargs)
+        else:
+            # no communication needed between partitions for columns
+            for i in range(1, self.obj.npartitions + 1):
+                dsk[new_name, i] = (
+                    call_pandas_rolling_method_single, (old_name, i),
+                    self.rolling_kwargs, method_name, args, kwargs)
+
+        # Do the pandas operation to get the appropriate thing for metadata
+        pd_rolling = self.obj._pd.rolling(**self.rolling_kwargs)
+        metadata = getattr(pd_rolling, method_name)(*args, **kwargs)
+
+        return self.obj._constructor(
+            merge(self.obj.dask, dsk),
+            new_name,
+            metadata,
+            self.obj.divisions)
+
+    def count(self, *args, **kwargs):
+        return self._call_method('count', *args, **kwargs)
+
+    def sum(self, *args, **kwargs):
+        return self._call_method('sum', *args, **kwargs)
+
+    def mean(self, *args, **kwargs):
+        return self._call_method('mean', *args, **kwargs)
+
+    def median(self, *args, **kwargs):
+        return self._call_method('median', *args, **kwargs)
+
+    def min(self, *args, **kwargs):
+        return self._call_method('min', *args, **kwargs)
+
+    def max(self, *args, **kwargs):
+        return self._call_method('max', *args, **kwargs)
+
+    def std(self, *args, **kwargs):
+        return self._call_method('std', *args, **kwargs)
+
+    def var(self, *args, **kwargs):
+        return self._call_method('var', *args, **kwargs)
+
+    def skew(self, *args, **kwargs):
+        return self._call_method('skew', *args, **kwargs)
+
+    def kurt(self, *args, **kwargs):
+        return self._call_method('kurt', *args, **kwargs)
+
+    def quantile(self, *args, **kwargs):
+        return self._call_method('quantile', *args, **kwargs)
+
+    def apply(self, *args, **kwargs):
+        return self._call_method('apply', *args, **kwargs)
